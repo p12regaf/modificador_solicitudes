@@ -9,6 +9,7 @@ import sys
 import csv
 import io
 import json
+import platform
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -29,6 +30,10 @@ except ImportError:
 
 from obd_database import decode_datos, get_pid, OBD_PIDS
 from pid_selector import PIDSelectorDialog
+from network_manager import (
+    is_admin, request_admin_restart,
+    needs_config, add_temp_ip, remove_temp_ip,
+)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -160,6 +165,7 @@ class MainWindow(QMainWindow):
         self.resize(1350, 800)
 
         self._worker: SSHWorker | None = None
+        self._temp_network: tuple | None = None   # (interfaz, ip_temporal) añadida por network_manager
         self._load_config()
         self._overrides: dict = self._load_overrides()
         self._setup_ui()
@@ -956,10 +962,43 @@ class MainWindow(QMainWindow):
         if params is None:
             return
         self._save_config()
+        self._ensure_network(params["host"])
         self._ssh_buttons(False)
         self._worker = SSHWorker(operation, **params, **extra)
         self._worker.finished.connect(on_done)
         self._worker.start()
+
+    def _ensure_network(self, hums_ip: str) -> None:
+        """
+        Si el PC no está en la subred del HUMS, añade una IP temporal
+        al adaptador adecuado. Solo actúa en Windows y una sola vez por sesión.
+        """
+        if platform.system() != "Windows":
+            return
+        if self._temp_network:
+            return  # ya configurado en esta sesión
+        if not needs_config(hums_ip):
+            return  # ya está en el rango correcto
+        self.statusBar().showMessage("Configurando red para alcanzar el HUMS…")
+        result = add_temp_ip(hums_ip)
+        if result:
+            self._temp_network = result
+            iface, ip = result
+            self.statusBar().showMessage(
+                f"Red configurada — IP temporal {ip} añadida en '{iface}'"
+            )
+        else:
+            self.statusBar().showMessage(
+                "Aviso: no se pudo configurar la red automáticamente"
+            )
+
+    def closeEvent(self, event) -> None:
+        """Al cerrar, elimina la IP temporal si se añadió durante la sesión."""
+        if platform.system() == "Windows" and self._temp_network:
+            iface, ip = self._temp_network
+            remove_temp_ip(iface, ip)
+            self._temp_network = None
+        super().closeEvent(event)
 
     # ── SSH button actions ─────────────────────────────────────────────────
 
@@ -1872,8 +1911,16 @@ parámetro en las ECUs del vehículo.</p>
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    # Necesario para algunas distribuciones Linux con Wayland
     import os
+
+    # En Windows, la configuración de red requiere privilegios de administrador.
+    # Si no los tenemos (p. ej. al ejecutar el script directamente en desarrollo),
+    # relanzamos con UAC. El .exe ya lo pide automáticamente vía su manifiesto.
+    if platform.system() == "Windows" and not is_admin():
+        request_admin_restart()
+        return
+
+    # Necesario para algunas distribuciones Linux con Wayland
     if "WAYLAND_DISPLAY" in os.environ and "QT_QPA_PLATFORM" not in os.environ:
         os.environ["QT_QPA_PLATFORM"] = "xcb"
 

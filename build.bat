@@ -53,9 +53,11 @@ echo    (puede tardar 1-2 minutos)
 pyinstaller ^
     --onefile ^
     --windowed ^
+    --uac-admin ^
     --name "%APP_NAME%" ^
     --add-data "obd_database.py;." ^
     --add-data "pid_selector.py;." ^
+    --add-data "network_manager.py;." ^
     --hidden-import "paramiko" ^
     --hidden-import "paramiko.transport" ^
     --hidden-import "paramiko.auth_handler" ^
